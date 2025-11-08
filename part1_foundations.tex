@@ -12,7 +12,7 @@
 
 \section{The Hard Problem Meets Computation Theory}
 
-The question of consciousness—how and why subjective experience arises from physical processes—has long stood as one of the most profound challenges in science and philosophy \autocite{chalmers1995,nagel1974}. While neuroscience has made remarkable progress in mapping the neural correlates of conscious states \autocite{koch2016}, and cognitive science has illuminated the functional architecture of the mind, a fundamental explanatory gap remains \autocite{levine1983}. Why does information processing in the brain give rise to the felt quality of experience? Why is there "something it is like" to be conscious?
+The question of consciousness—how and why subjective experience arises from physical processes—has long stood as one of the most profound challenges in science and philosophy \cite{chalmers1995,nagel1974}. While neuroscience has made remarkable progress in mapping the neural correlates of conscious states \cite{koch2016}, and cognitive science has illuminated the functional architecture of the mind, a fundamental explanatory gap remains \cite{levine1983}. Why does information processing in the brain give rise to the felt quality of experience? Why is there "something it is like" to be conscious?
 
 This book presents a novel computational framework that addresses this question by integrating insights from existing consciousness theories within a new mathematical structure: the finite machine hierarchy. Our central claim is that consciousness is not merely correlated with computation, but is fundamentally the subjective experience of a specific type of computational process—one characterized by parallel exploration across resource levels, temporal collapse, and the invisibility of failed computational attempts.
 
@@ -21,13 +21,13 @@ This book presents a novel computational framework that addresses this question 
 Contemporary consciousness research is characterized by several major theoretical frameworks, each capturing important aspects of conscious experience:
 
 \begin{itemize}
-\item \textbf{Integrated Information Theory (IIT)} proposes that consciousness corresponds to integrated information, quantified as $\phimax$, which measures the irreducible cause-effect power of a system \autocite{tononi2004,tononi2016,oizumi2014}.
+\item \textbf{Integrated Information Theory (IIT)} proposes that consciousness corresponds to integrated information, quantified as $\phimax$, which measures the irreducible cause-effect power of a system \cite{tononi2004,tononi2016,oizumi2014}.
 
-\item \textbf{Global Workspace Theory (GWT)} suggests consciousness acts as a broadcast mechanism, making information globally available to specialized cognitive processes \autocite{baars1988,baars1997,dehaene2001}.
+\item \textbf{Global Workspace Theory (GWT)} suggests consciousness acts as a broadcast mechanism, making information globally available to specialized cognitive processes \cite{baars1988,baars1997,dehaene2001}.
 
-\item \textbf{Attention Schema Theory (AST)} frames consciousness as the brain's internal model of its own attentional processes, serving control and predictive functions \autocite{graziano2013,graziano2019}.
+\item \textbf{Attention Schema Theory (AST)} frames consciousness as the brain's internal model of its own attentional processes, serving control and predictive functions \cite{graziano2013,graziano2019}.
 
-\item \textbf{Quantum Consciousness (Orch-OR)} proposes that quantum processes in neural microtubules give rise to conscious moments through objective reduction \autocite{penrose1989,hameroff1996}.
+\item \textbf{Quantum Consciousness (Orch-OR)} proposes that quantum processes in neural microtubules give rise to conscious moments through objective reduction \cite{penrose1989,hameroff1996}.
 \end{itemize}
 
 Each theory offers valuable insights, yet each also faces significant challenges. IIT struggles with computational intractability and counterintuitive implications. GWT leaves unexplained why global broadcasting should produce subjective experience. AST must account for the phenomenal character of consciousness beyond functional description. Orch-OR faces skepticism about quantum coherence in biological systems.
@@ -53,7 +53,7 @@ The fundamental insight of this work is that consciousness is what computation "
 
 \subsection{The Finite Machine Hierarchy: A New Foundation}
 
-Our framework begins with a deceptively simple idea from computational complexity theory \autocite{sipser2012,arora2009}: instead of modeling cognition as a single Turing machine with infinite memory \autocite{turing1936}, we model it as a hierarchy of finite-state machines with exponentially growing resources.
+Our framework begins with a deceptively simple idea from computational complexity theory \cite{sipser2012,arora2009}: instead of modeling cognition as a single Turing machine with infinite memory \cite{turing1936}, we model it as a hierarchy of finite-state machines with exponentially growing resources.
 
 Let $M_1, M_2, M_3, \ldots, M_n, \ldots$ be a sequence of finite machines where $M_n$ has $2^n$ bits of memory. The hierarchy exhibits a \important{generalized non-uniform structure}: effective computational levels are not uniformly spaced, but rather follow $M_n \subseteq M_{n+f(n)}$ where $f(n) \geq 1$ is a variable resource gap function that may grow logarithmically, polynomially, or exponentially. This reflects realistic cognitive resource allocation where transitions between effective processing levels involve variable resource jumps. Each machine in this hierarchy:
 
@@ -77,7 +77,7 @@ For each fixed $n$, all properties of $M_n$ (including halting, reachability, an
 The key challenge—and the source of consciousness in our framework—is the \important{selector problem}: Given a computational problem, which machine $M_n$ should be deployed?
 
 \begin{theorem}[Selector Non-Computability]
-There exists no computable function $s: \text{Problems} \to \mathbb{N}$ that always returns the minimal $n$ such that $M_n$ can solve the given problem. This is related to Kolmogorov complexity \autocite{kolmogorov1965,chaitin1975}—finding the shortest description of a solution is non-computable.
+There exists no computable function $s: \text{Problems} \to \mathbb{N}$ that always returns the minimal $n$ such that $M_n$ can solve the given problem. This is related to Kolmogorov complexity \cite{kolmogorov1965,chaitin1975}—finding the shortest description of a solution is non-computable.
 \end{theorem}
 
 \section{Why Existing Theories Are Incomplete}
@@ -135,7 +135,7 @@ Consciousness is the subjective experience of computational collapse across a fi
 This framework explains:
 
 \begin{itemize}
-\item \textbf{Why there is something it is like:} The internal phenomenology \autocite{husserl1991} of resource-constrained collapse
+\item \textbf{Why there is something it is like:} The internal phenomenology \cite{husserl1991} of resource-constrained collapse
 \item \textbf{The unity of consciousness:} A single path emerges from parallel exploration
 \item \textbf{The flow of time:} Subjective continuity despite computational iteration
 \item \textbf{Qualia and content:} The specific character of what $M_n$ computed
@@ -353,13 +353,15 @@ The hierarchy follows a non-uniform inclusion structure $M_n \subseteq M_{n+f(n)
 
 This gives us a sequence:
 \begin{align*}
-M_1 &: 2^1 = 2 \text{ bits of memory} \\
-M_2 &: 2^2 = 4 \text{ bits of memory} \\
-M_3 &: 2^3 = 8 \text{ bits of memory} \\
-M_4 &: 2^4 = 16 \text{ bits of memory} \\
+M_{10} &: 2^{10} = 1,024 \text{ bits (1K bits)} \\
+M_{15} &: 2^{15} = 32,768 \text{ bits (32K bits)} \\
+M_{20} &: 2^{20} = 1,048,576 \text{ bits (1M bits)} \\
+M_{25} &: 2^{25} = 33,554,432 \text{ bits (32M bits)} \\
 &\vdots \\
 M_n &: 2^n \text{ bits of memory}
 \end{align*}
+
+where realistic cognitive systems likely operate with levels ranging from approximately $M_{15}$ (basic perception) to $M_{35}$ (complex reasoning).
 
 \subsection{Properties of Individual Machines}
 

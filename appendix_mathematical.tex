@@ -86,9 +86,9 @@ Universality condition & $\lim_{n \to \infty} f(n) = \infty$ (asymptotic univers
 Bounded depth & Only finitely many levels accessible ($n_{\max}$) \\
 \midrule
 \multicolumn{2}{l}{\textit{Realistic Constraints (biological systems)}} \\
-Max level & $n_{\max} \approx 7\text{-}10$ (estimated) \\
-$M_7$ capacity & $2^7 = 128$ bits $\approx 10^{38}$ configurations \\
-Typical use & $M_3$ to $M_5$ (8-32 bits) \\
+Max level & $n_{\max} \approx 35\text{-}40$ (estimated upper bound) \\
+$M_{30}$ capacity & $2^{30}$ = 1G bits (realistic working memory) \\
+Typical use & $M_{15}$ to $M_{30}$ (32K-1G bits) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -226,12 +226,12 @@ The temporal integration window at level $n$ is $W_n: \mathbb{R}^+ \rightarrow [
 \toprule
 \textbf{Level} & \textbf{Memory} & \textbf{Window ($\tau_n$)} & \textbf{Function} \\
 \midrule
-1 & 2 bits & $\sim$50 ms & Basic perception \\
-2 & 4 bits & $\sim$100 ms & Feature binding \\
-3 & 8 bits & $\sim$200 ms & Object recognition \\
-4 & 16 bits & $\sim$400 ms & Working memory \\
-5 & 32 bits & $\sim$800 ms & Planning \\
-6 & 64 bits & $\sim$1.6 s & Complex reasoning \\
+$M_{10}$ & $2^{10}$ = 1K bits & $\sim$50 ms & Basic perception \\
+$M_{15}$ & $2^{15}$ = 32K bits & $\sim$100 ms & Feature binding \\
+$M_{20}$ & $2^{20}$ = 1M bits & $\sim$200 ms & Object recognition \\
+$M_{25}$ & $2^{25}$ = 32M bits & $\sim$400 ms & Working memory \\
+$M_{30}$ & $2^{30}$ = 1G bits & $\sim$800 ms & Planning \\
+$M_{35}$ & $2^{35}$ = 32G bits & $\sim$1.6 s & Complex reasoning \\
 \bottomrule
 \end{tabular}
 \end{table}
