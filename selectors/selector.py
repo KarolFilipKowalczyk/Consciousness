@@ -1,26 +1,22 @@
 """
-selector.py
+selector.py - Updated Implementation Based on Revised Theory
 
-A theoretically-correct implementation of the Selector framework from
-"Selectors and Meta-Selectors in Large Language Model Hierarchies"
+This implementation follows the improved theoretical framework with:
+1. Clear separation of offline (prototype learning) and online (selection) phases
+2. Explicit two-mode operation: explore (call models) vs exploit (use prototypes)
+3. Proper behavioral distance measurement using actual model outputs
+4. Transparent trade-offs between accuracy and efficiency
 
-This implementation actually measures behavioral distance by:
-1. Invoking candidate models with the query
-2. Embedding their actual outputs
-3. Comparing output embeddings to query embeddings
-4. Learning prototypes from real model behaviors
-
-Author: Claude (based on theory by Karol Kowalczyk)
+Author: Updated by Claude based on revised framework
 License: MIT
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Protocol, Callable
+from typing import Dict, List, Tuple, Optional, Callable, Protocol
 from abc import ABC, abstractmethod
-import numpy as np
-from sentence_transformers import SentenceTransformer
 from enum import Enum
+import numpy as np
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Core Protocols and Interfaces
+# Core Protocols and Types
 # ============================================================================
 
 class ModelInferenceProtocol(Protocol):
@@ -40,259 +36,368 @@ class ModelInferenceProtocol(Protocol):
 
 class CostEstimator(Protocol):
     """Protocol for estimating inference cost."""
-    def estimate(self, query: str, model_id: str) -> float:
-        """Estimate cost of running model_id on query."""
+    def __call__(self, query: str) -> float:
+        """Estimate cost of running model on query."""
         ...
 
 
+# ============================================================================
+# Embedding Space - Shared semantic space for queries and outputs
+# ============================================================================
+
 class EmbeddingSpace(ABC):
-    """Abstract base for embedding queries and outputs in a shared space."""
+    """
+    Abstract base for embedding queries and outputs in a shared latent space.
+    This is the foundation of behavioral distance measurement.
+    """
     
     @abstractmethod
     def embed_query(self, query: str) -> np.ndarray:
-        """Embed a query into the latent space."""
+        """Embed a query into the latent space: f_S(x)"""
         pass
     
     @abstractmethod
     def embed_output(self, model_id: str, output: str) -> np.ndarray:
-        """Embed a model output into the latent space."""
+        """Embed a model output into the latent space: g_S(M_i(x))"""
         pass
     
     @abstractmethod
     def distance(self, u: np.ndarray, v: np.ndarray) -> float:
-        """Compute distance between two embeddings."""
+        """Compute distance between two embeddings: D_S(u, v)"""
         pass
 
-
-# ============================================================================
-# Concrete Embedding Implementation
-# ============================================================================
 
 @dataclass
-class SentenceTransformerSpace(EmbeddingSpace):
+class SimpleEmbeddingSpace(EmbeddingSpace):
     """
-    Shared latent space using SentenceTransformers.
-    Both queries and outputs are embedded in the same space.
+    Simple TF-IDF based embedding space for demonstration.
+    Production use should employ SentenceTransformers or LLM embeddings.
     """
-    model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    vocab: Dict[str, int] = field(default_factory=dict)
+    idf: Dict[str, float] = field(default_factory=dict)
+    doc_count: int = 0
+    dim: int = 512
     normalize: bool = True
-    distance_metric: str = "cosine"  # "cosine" | "euclidean" | "manhattan"
-    _model: Optional[SentenceTransformer] = field(default=None, init=False, repr=False)
     
-    def __post_init__(self):
-        self._model = SentenceTransformer(self.model_name)
-        logger.info(f"Loaded embedding model: {self.model_name}")
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple word tokenization."""
+        return text.lower().split()
+    
+    def _compute_tfidf(self, text: str) -> np.ndarray:
+        """Compute TF-IDF vector for text."""
+        tokens = self._tokenize(text)
+        
+        # Update vocabulary and IDF
+        unique_tokens = set(tokens)
+        for token in unique_tokens:
+            if token not in self.vocab and len(self.vocab) < self.dim:
+                self.vocab[token] = len(self.vocab)
+            if token not in self.idf:
+                self.idf[token] = 0
+            self.idf[token] += 1
+        self.doc_count += 1
+        
+        # Compute TF
+        from collections import Counter
+        tf = Counter(tokens)
+        
+        # Create vector
+        vec = np.zeros(self.dim, dtype=np.float32)
+        for token, count in tf.items():
+            if token in self.vocab:
+                idx = self.vocab[token]
+                idf_val = np.log(self.doc_count / (self.idf[token] + 1))
+                vec[idx] = count * idf_val
+        
+        # Normalize
+        if self.normalize:
+            norm = np.linalg.norm(vec)
+            if norm > 1e-12:
+                vec = vec / norm
+        
+        return vec
     
     def embed_query(self, query: str) -> np.ndarray:
-        """Embed query using the sentence transformer."""
-        vec = self._model.encode(
-            query, 
-            convert_to_numpy=True, 
-            normalize_embeddings=self.normalize
-        )
-        return vec.astype(np.float32)
+        """Embed query using TF-IDF."""
+        return self._compute_tfidf(query)
     
     def embed_output(self, model_id: str, output: str) -> np.ndarray:
         """
-        Embed model output.
-        Could optionally prepend model_id to capture model-specific style:
-        text = f"[{model_id}] {output}"
+        Embed model output using TF-IDF.
+        Could prepend model_id to learn model-specific styles.
         """
-        vec = self._model.encode(
-            output,
-            convert_to_numpy=True,
-            normalize_embeddings=self.normalize
-        )
-        return vec.astype(np.float32)
+        return self._compute_tfidf(output)
     
     def distance(self, u: np.ndarray, v: np.ndarray) -> float:
-        """Compute distance between embeddings."""
-        if self.distance_metric == "cosine":
-            # Cosine distance = 1 - cosine_similarity
-            dot = np.dot(u, v)
-            norm_u = np.linalg.norm(u) + 1e-12
-            norm_v = np.linalg.norm(v) + 1e-12
-            return float(1.0 - dot / (norm_u * norm_v))
-        elif self.distance_metric == "euclidean":
-            return float(np.linalg.norm(u - v))
-        elif self.distance_metric == "manhattan":
-            return float(np.sum(np.abs(u - v)))
-        else:
-            raise ValueError(f"Unknown distance metric: {self.distance_metric}")
+        """Cosine distance between embeddings."""
+        dot = np.dot(u, v)
+        norm_u = np.linalg.norm(u) + 1e-12
+        norm_v = np.linalg.norm(v) + 1e-12
+        return float(1.0 - dot / (norm_u * norm_v))
 
 
 # ============================================================================
-# Model Registry and Adapter
+# Model Adapter - Wraps actual models with metadata
 # ============================================================================
 
 @dataclass
 class ModelAdapter:
     """
-    Wraps a real model with metadata for the selector.
-    This adapter ACTUALLY CALLS the model during selection.
+    Adapter for a language model in the hierarchy.
+    Provides inference, cost estimation, and metadata.
     """
     model_id: str
     inference_fn: ModelInferenceProtocol
-    cost_per_token: float  # Cost per 1K tokens (example metric)
+    cost_per_1k_tokens: float
     level: int  # Hierarchy level: 0=small, 1=medium, 2=large
-    quality_hint: float = 0.5  # Optional prior on quality (0-1)
+    quality_prior: float = 0.5  # Prior belief about quality [0,1]
     
     def infer(self, query: str) -> str:
         """Execute actual model inference."""
-        logger.debug(f"Calling model {self.model_id} with query: {query[:50]}...")
-        output = self.inference_fn(query)
-        logger.debug(f"Model {self.model_id} returned: {output[:100]}...")
-        return output
+        logger.debug(f"Calling {self.model_id} with query: {query[:50]}...")
+        return self.inference_fn(query)
     
     def estimate_cost(self, query: str) -> float:
-        """Estimate cost based on query length (simplified)."""
-        # Rough token estimate: ~4 chars per token
-        approx_tokens = len(query) / 4
-        # Assume output is similar length
-        total_tokens = approx_tokens * 2
-        return (total_tokens / 1000) * self.cost_per_token
+        """
+        Estimate cost based on query length.
+        Uses rough heuristic: 4 chars ≈ 1 token.
+        """
+        query_tokens = len(query) / 4
+        # Assume response is similar length
+        total_tokens = query_tokens * 2
+        return (total_tokens / 1000) * self.cost_per_1k_tokens
 
 
 # ============================================================================
-# Behavioral Prototype Bank
+# Behavioral Prototypes - Learned representations of model behaviors
 # ============================================================================
 
 @dataclass
 class BehavioralPrototype:
-    """A prototype representing typical model behavior."""
-    embedding: np.ndarray
-    count: int = 0  # Number of times this prototype was updated
-    exemplar_output: Optional[str] = None  # Optional: store one example
+    """
+    A prototype representing typical model behavior in embedding space.
+    
+    Prototypes are learned from actual model outputs, not from queries.
+    Each prototype represents a cluster of similar outputs.
+    """
+    embedding: np.ndarray  # Centroid in embedding space
+    count: int = 0  # Number of outputs contributing to this prototype
+    variance: float = 0.0  # Variance within cluster (for confidence)
+    exemplar_output: Optional[str] = None  # Example output from this cluster
 
 
 @dataclass
 class PrototypeBank:
     """
-    Stores learned prototypes of model behaviors.
-    Prototypes are built from ACTUAL model outputs, not queries.
+    Stores and manages behavioral prototypes for all models.
+    
+    Key operations:
+    - Learn prototypes from actual model outputs (offline phase)
+    - Predict behavioral distance using prototypes (online phase)
+    - Update prototypes with new observations (continuous learning)
     """
     max_prototypes_per_model: int = 5
-    ema_decay: float = 0.9
-    initialization_threshold: int = 3  # Min samples before creating new prototype
+    ema_decay: float = 0.9  # For EMA updates
+    cluster_threshold: float = 0.3  # Cosine distance threshold for new clusters
     
-    # Maps model_id -> list of prototypes
     _bank: Dict[str, List[BehavioralPrototype]] = field(default_factory=dict)
     
     def get_prototypes(self, model_id: str) -> List[BehavioralPrototype]:
         """Get all prototypes for a model."""
         return self._bank.get(model_id, [])
     
+    def has_prototypes(self, model_id: str) -> bool:
+        """Check if model has any prototypes."""
+        return model_id in self._bank and len(self._bank[model_id]) > 0
+    
     def add_observation(
-        self, 
-        model_id: str, 
+        self,
+        model_id: str,
         output_embedding: np.ndarray,
         output_text: str,
         distance_fn: Callable[[np.ndarray, np.ndarray], float]
     ) -> None:
         """
         Add an observed model output to update prototypes.
-        This implements learning from actual model behaviors.
+        
+        This is the core learning mechanism - we build prototypes from
+        ACTUAL model outputs, not from queries.
+        
+        Algorithm:
+        1. If no prototypes exist, create first one
+        2. Find nearest existing prototype
+        3. If distance > threshold and room for more, create new prototype
+        4. Otherwise, update nearest prototype with EMA
         """
         if model_id not in self._bank:
             self._bank[model_id] = []
         
         prototypes = self._bank[model_id]
         
+        # Case 1: First prototype for this model
         if len(prototypes) == 0:
-            # First observation: create initial prototype
             self._bank[model_id].append(BehavioralPrototype(
                 embedding=output_embedding.copy(),
                 count=1,
+                variance=0.0,
                 exemplar_output=output_text
             ))
             logger.info(f"Created first prototype for {model_id}")
             return
         
-        # Find nearest prototype
+        # Case 2: Find nearest existing prototype
         distances = [distance_fn(output_embedding, p.embedding) for p in prototypes]
         nearest_idx = int(np.argmin(distances))
         nearest_dist = distances[nearest_idx]
         
-        # Threshold for creating new prototype (adaptive based on space coverage)
-        new_prototype_threshold = 0.3  # Cosine distance threshold
-        
-        if nearest_dist > new_prototype_threshold and len(prototypes) < self.max_prototypes_per_model:
-            # Create new prototype for this behavior cluster
+        # Case 3: Create new prototype if sufficiently different
+        if (nearest_dist > self.cluster_threshold and 
+            len(prototypes) < self.max_prototypes_per_model):
             self._bank[model_id].append(BehavioralPrototype(
                 embedding=output_embedding.copy(),
                 count=1,
+                variance=nearest_dist,  # Initial variance estimate
                 exemplar_output=output_text
             ))
-            logger.info(f"Created new prototype for {model_id} (now {len(self._bank[model_id])} prototypes)")
+            logger.info(
+                f"Created prototype {len(self._bank[model_id])} for {model_id} "
+                f"(dist={nearest_dist:.3f})"
+            )
         else:
-            # Update nearest prototype with EMA
+            # Case 4: Update nearest prototype with EMA
             proto = prototypes[nearest_idx]
+            
+            # Update embedding with EMA
             proto.embedding = (
-                self.ema_decay * proto.embedding + 
+                self.ema_decay * proto.embedding +
                 (1.0 - self.ema_decay) * output_embedding
             ).astype(np.float32)
+            
+            # Update variance (running average)
+            proto.variance = (
+                self.ema_decay * proto.variance +
+                (1.0 - self.ema_decay) * nearest_dist
+            )
+            
             proto.count += 1
-            # Occasionally update exemplar
+            
+            # Periodically update exemplar
             if proto.count % 10 == 0:
                 proto.exemplar_output = output_text
-            logger.debug(f"Updated prototype {nearest_idx} for {model_id} (count={proto.count})")
+            
+            logger.debug(
+                f"Updated prototype {nearest_idx} for {model_id} "
+                f"(count={proto.count}, var={proto.variance:.3f})"
+            )
     
     def predict_distance(
         self,
         model_id: str,
         query_embedding: np.ndarray,
         distance_fn: Callable[[np.ndarray, np.ndarray], float]
-    ) -> float:
+    ) -> Tuple[float, float]:
         """
-        Predict the likely behavioral distance for this model WITHOUT calling it.
-        Uses learned prototypes as a proxy.
-        Returns minimum distance to any prototype (optimistic estimate).
+        Predict behavioral distance for a query using prototypes.
+        
+        Returns: (predicted_distance, confidence)
+        
+        This is the approximation that makes online selection efficient:
+        instead of calling the model, we estimate the distance to its
+        likely output using learned prototypes.
         """
         prototypes = self.get_prototypes(model_id)
-        if not prototypes:
-            return float('inf')  # No knowledge, assume worst case
         
+        if not prototypes:
+            # No knowledge about this model
+            return float('inf'), 0.0
+        
+        # Find nearest prototype
         distances = [distance_fn(query_embedding, p.embedding) for p in prototypes]
-        return min(distances)
+        min_idx = int(np.argmin(distances))
+        min_dist = distances[min_idx]
+        
+        # Confidence based on prototype variance
+        # Low variance = high confidence in prediction
+        prototype = prototypes[min_idx]
+        confidence = 1.0 / (1.0 + prototype.variance) if prototype.count > 5 else 0.5
+        
+        return min_dist, confidence
 
 
 # ============================================================================
-# Selection Strategies
+# Selection Modes and Results
 # ============================================================================
 
 class SelectionMode(Enum):
-    """Different selection strategies."""
-    EXPLOIT = "exploit"  # Always choose best known model
-    EXPLORE = "explore"  # Try models to learn their behaviors
-    HYBRID = "hybrid"    # Balance exploitation and exploration
+    """
+    Selection strategies implementing explore-exploit trade-off.
+    
+    EXPLOIT: Fast, uses prototypes, may be inaccurate
+    EXPLORE: Slow, calls models, builds accurate prototypes
+    HYBRID: Balances both with ε-greedy strategy
+    """
+    EXPLOIT = "exploit"
+    EXPLORE = "explore"
+    HYBRID = "hybrid"
 
 
 @dataclass
 class SelectionResult:
-    """Result of a selection decision."""
+    """
+    Result of a selection decision.
+    Contains both the decision and the actual outcome.
+    """
+    # Decision
     chosen_model_id: str
     chosen_level: int
+    selection_mode: SelectionMode
+    
+    # Actual outcome (after calling model)
     actual_output: str
     output_embedding: np.ndarray
-    behavioral_distance: float
+    
+    # Quality metrics
+    behavioral_distance: float  # True distance: D_S(query_emb, output_emb)
     estimated_cost: float
-    confidence: float
-    alternatives_considered: List[Tuple[str, float, float]]  # (model_id, dist, cost)
+    confidence: float  # Calibrated confidence score
+    
+    # Context
+    alternatives_considered: List[Tuple[str, float, float]]  # (id, dist, cost)
+    prediction_error: Optional[float] = None  # |predicted_dist - actual_dist|
 
 
 # ============================================================================
-# The Proper Selector
+# The Behavioral Selector - Main Implementation
 # ============================================================================
 
 class BehavioralSelector:
     """
-    A theoretically-correct selector that measures ACTUAL behavioral distance.
+    Adaptive model selector using behavioral distance in a shared embedding space.
     
-    Key differences from the original implementation:
-    1. Actually calls models during selection (at least in explore mode)
-    2. Measures distance between query embedding and ACTUAL output embedding
-    3. Learns prototypes from real model behaviors
-    4. Supports both full evaluation and prototype-based prediction
+    THEORY:
+    - Ideal: Evaluate all models, choose best based on behavioral distance + cost
+    - Practice: Learn prototypes offline, use for fast online prediction
+    
+    TWO-PHASE DESIGN:
+    
+    OFFLINE PHASE (via build_prototypes):
+    1. Collect representative queries
+    2. Call all models on these queries
+    3. Embed actual outputs
+    4. Cluster to form K prototypes per model
+    → One-time cost: O(N × M × T_model)
+    
+    ONLINE PHASE (via select):
+    1. Embed query: O(d)
+    2. Compare to prototypes: O(N × K × d)
+    3. Select best model
+    4. Call only selected model: O(T_model)
+    → Per-query cost: O(N × K × d) + 1 model call
+    
+    MODES:
+    - exploit: Always use prototypes (fastest)
+    - explore: Sample models to improve prototypes (learn)
+    - hybrid: ε-greedy balance (default)
     """
     
     def __init__(
@@ -300,439 +405,605 @@ class BehavioralSelector:
         embedding_space: EmbeddingSpace,
         model_adapters: Dict[str, ModelAdapter],
         prototype_bank: PrototypeBank,
+        # Scoring weights
         w_distance: float = 1.0,
         w_cost: float = 0.8,
         w_level: float = 0.1,  # Prefer lower levels when tied
+        # Confidence
         confidence_threshold: float = 0.75,
-        exploration_rate: float = 0.1,
+        confidence_k: float = -8.0,  # Logistic steepness
+        confidence_d0: float = 0.35,  # Logistic midpoint
+        # Exploration
+        exploration_rate: float = 0.1,  # ε for ε-greedy
+        exploration_sample_size: int = 3,
     ):
         self.space = embedding_space
         self.models = model_adapters
         self.prototypes = prototype_bank
+        
         self.w_distance = w_distance
         self.w_cost = w_cost
         self.w_level = w_level
+        
         self.confidence_threshold = confidence_threshold
+        self.confidence_k = confidence_k
+        self.confidence_d0 = confidence_d0
+        
         self.exploration_rate = exploration_rate
+        self.exploration_sample_size = exploration_sample_size
         
         # Statistics
         self.total_selections = 0
-        self.explorations = 0
-        self.exploitations = 0
+        self.exploration_count = 0
+        self.exploitation_count = 0
+        
+        # Get available levels
+        self.levels = sorted(set(adapter.level for adapter in model_adapters.values()))
     
     def _compute_confidence(self, distance: float) -> float:
         """
         Convert behavioral distance to confidence score.
-        Lower distance = higher confidence that model is suitable.
+        
+        Uses logistic function:
+        conf(d) = 1 / (1 + exp(k × (d - d_0)))
+        
+        Lower distance → higher confidence
         """
-        # Logistic function: conf = 1 / (1 + exp(k * (d - x0)))
-        k, x0 = -8.0, 0.35
-        return float(1.0 / (1.0 + np.exp(k * (distance - x0))))
+        return float(1.0 / (1.0 + np.exp(
+            self.confidence_k * (distance - self.confidence_d0)
+        )))
     
-    def _evaluate_model_actual(
-        self, 
-        model_id: str, 
-        query: str,
-        query_embedding: np.ndarray
-    ) -> Tuple[str, np.ndarray, float, float]:
-        """
-        Actually call the model and measure true behavioral distance.
-        
-        Returns: (output, output_embedding, distance, cost)
-        """
-        adapter = self.models[model_id]
-        
-        # ACTUALLY CALL THE MODEL
-        output = adapter.infer(query)
-        
-        # Embed the ACTUAL output
-        output_embedding = self.space.embed_output(model_id, output)
-        
-        # Measure TRUE behavioral distance
-        distance = self.space.distance(query_embedding, output_embedding)
-        
-        # Estimate cost
-        cost = adapter.estimate_cost(query)
-        
-        return output, output_embedding, distance, cost
-    
-    def _evaluate_model_predicted(
-        self,
-        model_id: str,
-        query: str,
-        query_embedding: np.ndarray
-    ) -> Tuple[float, float]:
-        """
-        Predict behavioral distance using prototypes (no model call).
-        
-        Returns: (predicted_distance, estimated_cost)
-        """
-        adapter = self.models[model_id]
-        
-        # Predict distance using learned prototypes
-        pred_distance = self.prototypes.predict_distance(
-            model_id, 
-            query_embedding, 
-            self.space.distance
-        )
-        
-        # Estimate cost
-        cost = adapter.estimate_cost(query)
-        
-        return pred_distance, cost
-    
-    def _compute_composite_score(
+    def _compute_score(
         self,
         distance: float,
         cost: float,
         level: int
     ) -> float:
         """
-        Compute weighted score combining behavioral fit, cost, and level preference.
-        Lower is better.
+        Compute composite score for model selection.
+        
+        score = w_d × distance + w_c × cost + w_l × level
+        
+        Lower is better (minimization problem).
         """
         return (
-            self.w_distance * distance + 
-            self.w_cost * cost + 
+            self.w_distance * distance +
+            self.w_cost * cost +
             self.w_level * level
         )
     
-    def select_exploit(
-        self, 
-        query: str,
-        top_k: int = 1
-    ) -> SelectionResult:
+    def build_prototypes(
+        self,
+        query_corpus: List[str],
+        models_to_profile: Optional[List[str]] = None,
+        verbose: bool = True
+    ) -> None:
         """
-        Exploitation mode: use prototypes to predict best model, then call only that one.
-        Fast but doesn't learn new behaviors.
+        OFFLINE PHASE: Build behavioral prototypes from actual model outputs.
+        
+        This is the expensive one-time cost that enables fast online selection.
+        
+        Algorithm:
+        1. For each model to profile:
+           a. Call model on all queries in corpus
+           b. Embed actual outputs
+           c. Add observations to prototype bank (clustering happens automatically)
+        
+        Complexity: O(|models| × |corpus| × T_model)
+        
+        Args:
+            query_corpus: Representative queries spanning expected distribution
+            models_to_profile: Specific models to profile (default: all)
+            verbose: Log progress
         """
-        query_embedding = self.space.embed_query(query)
+        if models_to_profile is None:
+            models_to_profile = list(self.models.keys())
         
-        # Predict scores for all models using prototypes
-        candidates = []
-        for model_id, adapter in self.models.items():
-            pred_dist, cost = self._evaluate_model_predicted(model_id, query, query_embedding)
-            score = self._compute_composite_score(pred_dist, cost, adapter.level)
-            candidates.append((model_id, pred_dist, cost, score))
-        
-        # Sort by score
-        candidates.sort(key=lambda x: x[3])
-        
-        # Choose best model and ACTUALLY CALL IT
-        best_model_id, pred_dist, pred_cost, _ = candidates[0]
-        output, output_emb, actual_dist, actual_cost = self._evaluate_model_actual(
-            best_model_id, query, query_embedding
+        logger.info(
+            f"Building prototypes for {len(models_to_profile)} models "
+            f"using {len(query_corpus)} queries"
         )
         
-        # Update prototypes with actual behavior
+        for model_id in models_to_profile:
+            if verbose:
+                logger.info(f"Profiling {model_id}...")
+            
+            adapter = self.models[model_id]
+            
+            for i, query in enumerate(query_corpus):
+                # ACTUALLY CALL THE MODEL
+                output = adapter.infer(query)
+                
+                # Embed the ACTUAL OUTPUT
+                output_embedding = self.space.embed_output(model_id, output)
+                
+                # Add observation to prototype bank
+                self.prototypes.add_observation(
+                    model_id,
+                    output_embedding,
+                    output,
+                    self.space.distance
+                )
+                
+                if verbose and (i + 1) % 10 == 0:
+                    logger.info(
+                        f"  {model_id}: {i+1}/{len(query_corpus)} queries processed, "
+                        f"{len(self.prototypes.get_prototypes(model_id))} prototypes"
+                    )
+        
+        # Summary
+        logger.info("Prototype building complete:")
+        for model_id in models_to_profile:
+            n_protos = len(self.prototypes.get_prototypes(model_id))
+            logger.info(f"  {model_id}: {n_protos} prototypes")
+    
+    def select_exploit(
+        self,
+        query: str,
+        return_top_k: int = 1
+    ) -> SelectionResult:
+        """
+        EXPLOIT MODE: Use prototypes for fast selection.
+        
+        Algorithm (Online Phase):
+        1. Embed query
+        2. For each model:
+           a. Predict distance using prototypes (NO model call)
+           b. Compute score = w_d × dist + w_c × cost + w_l × level
+        3. Select best model
+        4. Call ONLY the selected model
+        5. Update prototypes with actual output (optional continuous learning)
+        
+        Complexity: O(N × K × d) + 1 model call
+        where N=models, K=prototypes/model, d=embedding dim
+        """
+        # Step 1: Embed query
+        query_embedding = self.space.embed_query(query)
+        
+        # Step 2: Score all models using prototypes
+        candidates = []
+        for model_id, adapter in self.models.items():
+            # Predict distance using prototypes (no model call!)
+            pred_dist, pred_conf = self.prototypes.predict_distance(
+                model_id,
+                query_embedding,
+                self.space.distance
+            )
+            
+            # Estimate cost
+            cost = adapter.estimate_cost(query)
+            
+            # Compute score
+            score = self._compute_score(pred_dist, cost, adapter.level)
+            
+            candidates.append((model_id, pred_dist, cost, score, pred_conf))
+        
+        # Step 3: Select best
+        candidates.sort(key=lambda x: x[3])  # Sort by score
+        best_model_id, pred_dist, pred_cost, _, pred_conf = candidates[0]
+        
+        # Step 4: Call ONLY the selected model
+        adapter = self.models[best_model_id]
+        output = adapter.infer(query)
+        
+        # Step 5: Measure TRUE behavioral distance
+        output_embedding = self.space.embed_output(best_model_id, output)
+        actual_distance = self.space.distance(query_embedding, output_embedding)
+        actual_confidence = self._compute_confidence(actual_distance)
+        
+        # Step 6: Update prototypes with actual behavior (continuous learning)
         self.prototypes.add_observation(
-            best_model_id, 
-            output_emb, 
+            best_model_id,
+            output_embedding,
             output,
             self.space.distance
         )
         
-        confidence = self._compute_confidence(actual_dist)
-        
-        self.exploitations += 1
+        # Statistics
+        self.exploitation_count += 1
         self.total_selections += 1
+        
+        # Compute prediction error
+        prediction_error = abs(pred_dist - actual_distance)
         
         return SelectionResult(
             chosen_model_id=best_model_id,
-            chosen_level=self.models[best_model_id].level,
+            chosen_level=adapter.level,
+            selection_mode=SelectionMode.EXPLOIT,
             actual_output=output,
-            output_embedding=output_emb,
-            behavioral_distance=actual_dist,
-            estimated_cost=actual_cost,
-            confidence=confidence,
-            alternatives_considered=[(m, d, c) for m, d, c, _ in candidates[:top_k]]
+            output_embedding=output_embedding,
+            behavioral_distance=actual_distance,
+            estimated_cost=pred_cost,
+            confidence=actual_confidence,
+            alternatives_considered=[(m, d, c) for m, d, c, _, _ in candidates[:return_top_k]],
+            prediction_error=prediction_error
         )
     
     def select_explore(
         self,
         query: str,
-        sample_size: int = 3
+        sample_size: Optional[int] = None
     ) -> SelectionResult:
         """
-        Exploration mode: actually call multiple models to learn their behaviors.
-        Expensive but builds accurate prototypes.
+        EXPLORE MODE: Actually call multiple models to learn behaviors.
+        
+        Algorithm:
+        1. Embed query
+        2. Sample S models (typically 2-5)
+        3. Call ALL sampled models
+        4. Embed all ACTUAL outputs
+        5. Measure TRUE behavioral distances
+        6. Select best
+        7. Update prototypes with all observations
+        
+        Complexity: O(S × T_model)
+        This is expensive but necessary for learning accurate prototypes.
         """
+        if sample_size is None:
+            sample_size = self.exploration_sample_size
+        
+        # Step 1: Embed query
         query_embedding = self.space.embed_query(query)
         
-        # Randomly sample models or choose strategically
-        # Strategy: sample across different levels
-        models_by_level = {}
-        for model_id, adapter in self.models.items():
-            if adapter.level not in models_by_level:
-                models_by_level[adapter.level] = []
-            models_by_level[adapter.level].append(model_id)
+        # Step 2: Sample models strategically
+        # Strategy: Sample one from each level to ensure coverage
+        sampled_models = []
+        for level in self.levels:
+            level_models = [
+                m for m, a in self.models.items() if a.level == level
+            ]
+            if level_models and len(sampled_models) < sample_size:
+                # Could use more sophisticated sampling (e.g., Thompson sampling)
+                sampled_models.append(np.random.choice(level_models))
         
-        # Sample one from each level (up to sample_size)
-        sample_models = []
-        for level in sorted(models_by_level.keys()):
-            if len(sample_models) >= sample_size:
-                break
-            sample_models.extend(models_by_level[level][:1])
+        # If we need more, sample randomly
+        if len(sampled_models) < sample_size:
+            remaining = [
+                m for m in self.models.keys() if m not in sampled_models
+            ]
+            n_more = min(sample_size - len(sampled_models), len(remaining))
+            sampled_models.extend(np.random.choice(remaining, n_more, replace=False))
         
-        # ACTUALLY CALL all sampled models
+        # Step 3-5: Call all sampled models and measure TRUE distances
         evaluations = []
-        for model_id in sample_models[:sample_size]:
-            output, output_emb, distance, cost = self._evaluate_model_actual(
-                model_id, query, query_embedding
-            )
-            score = self._compute_composite_score(distance, cost, self.models[model_id].level)
-            evaluations.append((model_id, output, output_emb, distance, cost, score))
+        for model_id in sampled_models:
+            adapter = self.models[model_id]
             
-            # Update prototypes with actual behavior
+            # ACTUALLY CALL THE MODEL
+            output = adapter.infer(query)
+            
+            # Embed ACTUAL OUTPUT
+            output_embedding = self.space.embed_output(model_id, output)
+            
+            # Measure TRUE behavioral distance
+            distance = self.space.distance(query_embedding, output_embedding)
+            
+            # Cost and score
+            cost = adapter.estimate_cost(query)
+            score = self._compute_score(distance, cost, adapter.level)
+            
+            evaluations.append((
+                model_id, output, output_embedding, distance, cost, score
+            ))
+            
+            # Step 7: Update prototypes with ACTUAL observations
             self.prototypes.add_observation(
                 model_id,
-                output_emb,
+                output_embedding,
                 output,
                 self.space.distance
             )
         
-        # Choose best based on actual measurements
+        # Step 6: Select best based on ACTUAL measurements
         evaluations.sort(key=lambda x: x[5])  # Sort by score
         best = evaluations[0]
-        
         best_model_id, output, output_emb, distance, cost, _ = best
+        
         confidence = self._compute_confidence(distance)
         
-        self.explorations += 1
+        # Statistics
+        self.exploration_count += 1
         self.total_selections += 1
         
         return SelectionResult(
             chosen_model_id=best_model_id,
             chosen_level=self.models[best_model_id].level,
+            selection_mode=SelectionMode.EXPLORE,
             actual_output=output,
             output_embedding=output_emb,
             behavioral_distance=distance,
             estimated_cost=cost,
             confidence=confidence,
-            alternatives_considered=[(m, d, c) for m, _, _, d, c, _ in evaluations]
+            alternatives_considered=[(m, d, c) for m, _, _, d, c, _ in evaluations],
+            prediction_error=None  # No prediction in explore mode
         )
     
-    def select_hybrid(
+    def select(
         self,
         query: str,
+        mode: SelectionMode = SelectionMode.HYBRID,
         force_explore: bool = False
     ) -> SelectionResult:
         """
-        Hybrid mode: usually exploit, occasionally explore.
-        Balances efficiency with continuous learning.
-        """
-        # Decide whether to explore
-        should_explore = force_explore or (np.random.random() < self.exploration_rate)
-        
-        if should_explore:
-            logger.info("Exploration mode activated")
-            return self.select_explore(query, sample_size=3)
-        else:
-            result = self.select_exploit(query)
-            
-            # Adaptive exploration: if confidence is low, consider exploring
-            if result.confidence < self.confidence_threshold:
-                logger.warning(
-                    f"Low confidence ({result.confidence:.3f}) for {result.chosen_model_id}, "
-                    "consider exploring"
-                )
-            
-            return result
-    
-    def select(
-        self, 
-        query: str, 
-        mode: SelectionMode = SelectionMode.HYBRID
-    ) -> SelectionResult:
-        """
-        Main selection interface.
+        Main selection interface with explore-exploit trade-off.
         
         Args:
-            query: The input query
-            mode: Selection strategy (exploit/explore/hybrid)
+            query: User query
+            mode: EXPLOIT (fast), EXPLORE (accurate), or HYBRID (ε-greedy)
+            force_explore: Override mode to force exploration
         
         Returns:
             SelectionResult with chosen model and actual output
         """
+        if force_explore:
+            mode = SelectionMode.EXPLORE
+        
         if mode == SelectionMode.EXPLOIT:
             return self.select_exploit(query)
+        
         elif mode == SelectionMode.EXPLORE:
             return self.select_explore(query)
+        
         elif mode == SelectionMode.HYBRID:
-            return self.select_hybrid(query)
+            # ε-greedy: explore with probability ε
+            if np.random.random() < self.exploration_rate:
+                logger.debug("HYBRID: Exploring")
+                return self.select_explore(query)
+            else:
+                logger.debug("HYBRID: Exploiting")
+                result = self.select_exploit(query)
+                
+                # Adaptive exploration: if confidence low, consider exploring more
+                if result.confidence < self.confidence_threshold:
+                    logger.warning(
+                        f"Low confidence ({result.confidence:.3f}) - "
+                        f"consider increasing exploration rate"
+                    )
+                
+                return result
+        
         else:
             raise ValueError(f"Unknown selection mode: {mode}")
     
     def get_statistics(self) -> Dict:
-        """Return selector statistics."""
-        return {
+        """Return selector statistics and prototype coverage."""
+        stats = {
             "total_selections": self.total_selections,
-            "explorations": self.explorations,
-            "exploitations": self.exploitations,
-            "exploration_rate": self.explorations / max(1, self.total_selections),
-            "models": {
-                model_id: {
-                    "num_prototypes": len(self.prototypes.get_prototypes(model_id)),
-                    "level": adapter.level,
-                }
-                for model_id, adapter in self.models.items()
-            }
+            "explorations": self.exploration_count,
+            "exploitations": self.exploitation_count,
+            "exploration_rate": (
+                self.exploration_count / max(1, self.total_selections)
+            ),
+            "models": {}
         }
+        
+        for model_id, adapter in self.models.items():
+            protos = self.prototypes.get_prototypes(model_id)
+            stats["models"][model_id] = {
+                "level": adapter.level,
+                "num_prototypes": len(protos),
+                "avg_prototype_count": (
+                    np.mean([p.count for p in protos]) if protos else 0
+                ),
+                "avg_prototype_variance": (
+                    np.mean([p.variance for p in protos]) if protos else 0
+                )
+            }
+        
+        return stats
 
 
 # ============================================================================
-# Demonstration with Mock Models
+# Mock Models for Demonstration
 # ============================================================================
 
-def create_mock_model(model_id: str, quality: float) -> ModelInferenceProtocol:
+def create_mock_model(model_id: str, quality_level: float) -> ModelInferenceProtocol:
     """
-    Create a mock model that produces different outputs based on quality.
-    Unlike the original implementation, these actually process the query.
+    Create a mock model with quality-dependent behavior.
+    
+    Unlike static implementations, these actually process the query
+    to produce different outputs based on content.
     """
-    def mock_inference(query: str) -> str:
-        # Parse query to generate appropriate response
-        query_lower = query.lower()
+    def inference(query: str) -> str:
+        q_lower = query.lower()
         
-        if quality < 0.4:  # Small model
-            if "quantum" in query_lower:
-                return "Quantum particles can be connected."
-            elif "explain" in query_lower or "what" in query_lower:
-                return "It's a complex topic that involves multiple factors."
+        if quality_level < 0.4:  # Small model
+            if "quantum" in q_lower:
+                return "Quantum particles are connected in special ways."
+            elif "what" in q_lower or "explain" in q_lower:
+                return "This is a complex topic with many aspects."
             else:
-                return f"Here's a brief answer about {query[:30]}."
+                return f"Brief answer about the topic."
         
-        elif quality < 0.7:  # Medium model
-            if "quantum" in query_lower:
-                return "Quantum entanglement is when two particles become correlated so that measuring one affects the other, even at a distance."
-            elif "explain" in query_lower:
-                # Extract topic
-                words = query.split()
-                topic = next((w for w in words if len(w) > 5), "this concept")
-                return f"{topic.capitalize()} involves several interconnected principles. Let me break this down into key points: first, the fundamental mechanism; second, the practical implications."
+        elif quality_level < 0.7:  # Medium model
+            if "quantum" in q_lower:
+                return (
+                    "Quantum entanglement occurs when two particles become "
+                    "correlated such that measuring one instantly affects the "
+                    "other, even across large distances."
+                )
+            elif "explain" in q_lower:
+                return (
+                    "Let me break this down: First, the fundamental concepts "
+                    "involve several key principles. Second, these interact in "
+                    "specific ways. Third, practical implications emerge from "
+                    "this interaction."
+                )
             else:
-                return f"Based on your question about '{query[:50]}', here's a detailed explanation of the key concepts involved."
+                return f"Detailed explanation addressing the key points raised."
         
         else:  # Large model
-            if "quantum" in query_lower:
+            if "quantum" in q_lower:
                 return (
-                    "Quantum entanglement represents a fundamental correlation between quantum systems "
-                    "that cannot be explained by classical physics. When two particles are entangled, "
-                    "their quantum states are interdependent—measuring one particle's state instantaneously "
-                    "determines the other's state, regardless of spatial separation. This phenomenon doesn't "
-                    "violate causality because no information is transmitted faster than light; rather, "
-                    "it reveals the non-local nature of quantum mechanics as described by the EPR paradox "
-                    "and Bell's theorem."
+                    "Quantum entanglement represents a fundamental departure "
+                    "from classical physics, where two particles share a quantum "
+                    "state such that measurements on one instantaneously determine "
+                    "properties of the other, regardless of separation. This "
+                    "non-local correlation, validated by violations of Bell's "
+                    "inequalities, doesn't permit faster-than-light signaling but "
+                    "reveals the deeply interconnected nature of quantum reality."
                 )
-            elif "explain" in query_lower:
-                words = query.split()
-                topic = next((w for w in words if len(w) > 5), "this concept")
+            elif "explain" in q_lower:
                 return (
-                    f"Let me provide a comprehensive explanation of {topic}. "
-                    f"First, we need to understand the historical context and theoretical foundation. "
-                    f"The current understanding emerged from extensive research and debate. "
-                    f"Key principles include: (1) the fundamental mechanisms at play, "
-                    f"(2) empirical evidence supporting the theory, (3) practical applications, "
-                    f"and (4) ongoing areas of investigation. Each of these aspects contributes to "
-                    f"our holistic understanding of {topic}."
+                    "To provide a comprehensive explanation, we must consider "
+                    "multiple dimensions: (1) Historical context and theoretical "
+                    "foundations that established current understanding. (2) Core "
+                    "mechanisms and principles that govern the phenomenon. "
+                    "(3) Empirical evidence supporting these theories, including "
+                    "experimental validations. (4) Practical applications and their "
+                    "implications. (5) Current limitations and ongoing research "
+                    "directions. Each aspect contributes to a holistic understanding."
                 )
             else:
                 return (
-                    f"Your inquiry regarding '{query[:60]}' raises several important considerations. "
-                    f"I'll address this from multiple perspectives: theoretical foundations, "
-                    f"empirical evidence, practical implications, and potential limitations of current understanding."
+                    "A thorough analysis requires examining this from multiple "
+                    "perspectives, considering both theoretical frameworks and "
+                    "empirical observations, while acknowledging the complexity "
+                    "and nuance inherent in the subject matter."
                 )
     
-    return mock_inference
+    return inference
 
+
+# ============================================================================
+# Demonstration
+# ============================================================================
 
 if __name__ == "__main__":
-    # Example usage demonstrating proper behavioral distance measurement
-    
     print("=" * 80)
-    print("Proper Behavioral Selector - Demonstration")
+    print("Behavioral Selector v2 - Updated Implementation")
+    print("Following Revised Theoretical Framework")
     print("=" * 80)
     
-    # Initialize embedding space
-    space = SentenceTransformerSpace()
+    # Setup
+    space = SimpleEmbeddingSpace()
     
-    # Create model adapters with REAL (mock) inference functions
     models = {
         "gpt-small": ModelAdapter(
             model_id="gpt-small",
-            inference_fn=create_mock_model("gpt-small", quality=0.3),
-            cost_per_token=0.0001,
+            inference_fn=create_mock_model("gpt-small", 0.3),
+            cost_per_1k_tokens=0.0001,
             level=0,
-            quality_hint=0.3
+            quality_prior=0.3
         ),
         "gpt-medium": ModelAdapter(
             model_id="gpt-medium",
-            inference_fn=create_mock_model("gpt-medium", quality=0.6),
-            cost_per_token=0.0005,
+            inference_fn=create_mock_model("gpt-medium", 0.6),
+            cost_per_1k_tokens=0.0005,
             level=1,
-            quality_hint=0.6
+            quality_prior=0.6
         ),
         "gpt-large": ModelAdapter(
             model_id="gpt-large",
-            inference_fn=create_mock_model("gpt-large", quality=0.9),
-            cost_per_token=0.002,
+            inference_fn=create_mock_model("gpt-large", 0.9),
+            cost_per_1k_tokens=0.002,
             level=2,
-            quality_hint=0.9
+            quality_prior=0.9
         ),
     }
     
-    # Initialize prototype bank
     prototype_bank = PrototypeBank(max_prototypes_per_model=5)
     
-    # Create selector
     selector = BehavioralSelector(
         embedding_space=space,
         model_adapters=models,
         prototype_bank=prototype_bank,
-        exploration_rate=0.2  # 20% exploration
+        exploration_rate=0.2
     )
     
-    # Test queries
-    queries = [
-        "Explain quantum entanglement to a 12-year-old.",
-        "What is the capital of France?",
-        "Explain quantum entanglement in detail.",
-        "What are the key principles of thermodynamics?",
-        "Give me a brief summary of quantum mechanics.",
-    ]
+    # ========================================================================
+    # OFFLINE PHASE: Build prototypes
+    # ========================================================================
     
     print("\n" + "=" * 80)
-    print("Running selection with hybrid mode (exploit + explore)")
-    print("=" * 80 + "\n")
+    print("OFFLINE PHASE: Building Behavioral Prototypes")
+    print("=" * 80)
     
-    for i, query in enumerate(queries, 1):
-        print(f"\n{'='*80}")
+    training_corpus = [
+        "What is quantum entanglement?",
+        "Explain machine learning to a beginner.",
+        "What is the capital of France?",
+        "How do neural networks work?",
+        "Describe the theory of relativity.",
+        "What are the benefits of exercise?",
+        "Explain photosynthesis.",
+        "What is climate change?",
+        "How does the internet work?",
+        "What is artificial intelligence?",
+    ]
+    
+    print(f"\nTraining corpus: {len(training_corpus)} queries")
+    print("This will call ALL models on ALL queries to learn prototypes...\n")
+    
+    selector.build_prototypes(training_corpus, verbose=True)
+    
+    # ========================================================================
+    # ONLINE PHASE: Fast selection using prototypes
+    # ========================================================================
+    
+    print("\n" + "=" * 80)
+    print("ONLINE PHASE: Fast Selection Using Learned Prototypes")
+    print("=" * 80)
+    
+    test_queries = [
+        "Explain quantum mechanics simply.",
+        "What is 2+2?",
+        "Describe quantum entanglement in detail.",
+        "Give me a brief overview of physics.",
+        "Explain the universe.",
+    ]
+    
+    for i, query in enumerate(test_queries, 1):
+        print(f"\n{'-'*80}")
         print(f"Query {i}: {query}")
-        print(f"{'='*80}")
+        print(f"{'-'*80}")
         
-        # Force exploration on first few queries to build prototypes
-        force_explore = (i <= 2)
-        result = selector.select_hybrid(query, force_explore=force_explore)
+        # Force exploration on first query to show both modes
+        force_explore = (i == 1)
         
-        print(f"\n✓ Selected Model: {result.chosen_model_id} (Level {result.chosen_level})")
+        result = selector.select(
+            query,
+            mode=SelectionMode.HYBRID,
+            force_explore=force_explore
+        )
+        
+        print(f"\n✓ Mode: {result.selection_mode.value.upper()}")
+        print(f"  Selected: {result.chosen_model_id} (Level {result.chosen_level})")
         print(f"  Behavioral Distance: {result.behavioral_distance:.4f}")
         print(f"  Confidence: {result.confidence:.4f}")
         print(f"  Estimated Cost: ${result.estimated_cost:.6f}")
-        print(f"\n  Output: {result.actual_output[:150]}...")
         
-        if result.alternatives_considered:
-            print(f"\n  Alternatives considered:")
+        if result.prediction_error is not None:
+            print(f"  Prediction Error: {result.prediction_error:.4f}")
+        
+        print(f"\n  Output: {result.actual_output[:120]}...")
+        
+        if len(result.alternatives_considered) > 1:
+            print(f"\n  Alternatives:")
             for model_id, dist, cost in result.alternatives_considered[:3]:
-                print(f"    - {model_id}: dist={dist:.4f}, cost=${cost:.6f}")
+                print(f"    {model_id}: dist={dist:.4f}, cost=${cost:.6f}")
     
-    # Print final statistics
+    # ========================================================================
+    # Statistics
+    # ========================================================================
+    
     print("\n" + "=" * 80)
-    print("Selector Statistics")
+    print("Final Statistics")
     print("=" * 80)
+    
     stats = selector.get_statistics()
-    print(f"Total selections: {stats['total_selections']}")
+    print(f"\nTotal selections: {stats['total_selections']}")
     print(f"Explorations: {stats['explorations']}")
     print(f"Exploitations: {stats['exploitations']}")
     print(f"Exploration rate: {stats['exploration_rate']:.2%}")
-    print("\nPrototypes learned per model:")
+    
+    print("\nPrototypes per model:")
     for model_id, info in stats['models'].items():
-        print(f"  {model_id}: {info['num_prototypes']} prototypes (Level {info['level']})")
+        print(f"  {model_id} (Level {info['level']}):")
+        print(f"    Prototypes: {info['num_prototypes']}")
+        print(f"    Avg observations per prototype: {info['avg_prototype_count']:.1f}")
+        print(f"    Avg prototype variance: {info['avg_prototype_variance']:.4f}")
+    
+    print("\n" + "=" * 80)
+    print("Demonstration Complete")
+    print("=" * 80)
