@@ -1,0 +1,582 @@
+\documentclass[11pt,a4paper]{article}
+
+% Essential packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{cleveref}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[margin=1in]{geometry}
+
+% Define theorem environments
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{proposition}{Proposition}
+
+% Code listing settings
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny,
+    language=Python,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red}
+}
+
+% Custom commands for consistency
+\newcommand{\behav}{\text{behav}}
+\newcommand{\argmin}{\operatorname{arg\,min}}
+\newcommand{\conf}{\text{conf}}
+
+% Document metadata
+\title{Selectors and Meta-Selectors in Large Language Model Hierarchies:\\
+\large A Practical Framework for Efficient Model Routing}
+\author{Karol Kowalczyk \\ \small (revised by Claude)}
+\date{November 2025}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present a framework for \textbf{adaptive model selection} in hierarchical LLM systems, where queries are routed to appropriately-sized models based on predicted difficulty. Our approach uses \textbf{behavioral distance} in a shared embedding space to measure how well a model's output would align with a query's intent. Rather than invoking all models (computationally expensive), we learn \textbf{behavioral prototypes} from historical model outputs and use these for fast approximation. A \textbf{meta-selector} monitors confidence and manages escalation to higher-capacity models when needed. We provide formal problem definitions, concrete algorithms, and open-source implementations. While full empirical validation remains future work, our framework bridges theory and practice for cost-efficient LLM inference.
+
+\textbf{Keywords}: model routing, hierarchical inference, behavioral distance, LLM efficiency, meta-learning
+\end{abstract}
+
+\section{Introduction}
+
+\subsection{Motivation}
+
+Large language models (LLMs) achieve remarkable capabilities at the cost of massive computational resources. For example:
+\begin{itemize}
+    \item GPT-4 may cost \$0.03 per 1K tokens
+    \item Claude-3 Opus costs \$0.015 per 1K tokens
+    \item GPT-3.5 Turbo costs \$0.0005 per 1K tokens (60× cheaper)
+\end{itemize}
+
+However, empirical analysis shows that \textbf{most queries don't require the largest models}:
+\begin{itemize}
+    \item Factual queries (``What is the capital of France?'') → answered correctly by small models
+    \item Simple summarization → medium models sufficient
+    \item Complex reasoning or creative synthesis → large models necessary
+\end{itemize}
+
+The challenge: \textbf{automatically match query difficulty to model capacity} to minimize cost while maintaining quality.
+
+\subsection{Problem Formulation}
+
+\textbf{Given:}
+\begin{itemize}
+    \item A hierarchy of LLMs: $\{M_1, M_2, \ldots, M_N\}$ where $M_i$ is cheaper but less capable than $M_{i+1}$
+    \item A query $x$ with unknown difficulty
+    \item Cost function $C(M_i)$ and quality metric $Q(M_i, x)$
+\end{itemize}
+
+\textbf{Goal:}
+Select $M^* = \argmin_i [C(M_i)]$ subject to $Q(M_i, x) \geq \theta$
+
+\textbf{Key Insight:}
+We can estimate $Q(M_i, x)$ by measuring \textbf{behavioral distance}: how close the model's output embedding is to the query's embedding in a shared semantic space.
+
+\subsection{Contributions}
+
+\begin{enumerate}
+    \item \textbf{Formal framework} for behavioral distance-based model selection
+    \item \textbf{Two-phase design} separating offline prototype learning from online routing
+    \item \textbf{Meta-selector} for confidence validation and hierarchical escalation
+    \item \textbf{Concrete algorithms} with complexity analysis
+    \item \textbf{Open-source implementation} in Python
+\end{enumerate}
+
+\subsection{Related Work}
+
+\textbf{Mixture of Experts (MoE):} Use learned gating networks to route inputs \cite{shazeer2017}. Our approach differs by using geometric distance in a shared embedding space rather than learned weights.
+
+\textbf{FrugalGPT \& Cascade Methods:} Route through models sequentially \cite{chen2023frugal}. We enable \textbf{parallel estimation} via prototypes and \textbf{cross-level comparison}.
+
+\textbf{Speculative Decoding:} Uses small models to speed up large models \cite{leviathan2023}. We focus on selecting the right model entirely, not accelerating generation.
+
+\textbf{Early Exit Networks:} Exit from layer computation early. We operate at the model-level, not layer-level.
+
+\section{Theoretical Framework}
+
+\subsection{Behavioral Distance: The Ideal Case}
+
+\begin{definition}[Behavioral Distance]
+Given a query $x$ and model $M_i$, the behavioral distance is:
+\begin{equation}
+d_{\behav}(M_i, x) = D_S(f_S(x), g_S(M_i(x)))
+\end{equation}
+where:
+\begin{itemize}
+    \item $f_S$: query embedding function
+    \item $g_S$: output embedding function
+    \item $D_S$: distance metric (e.g., cosine distance)
+    \item $M_i(x)$: actual output of model $M_i$ on query $x$
+\end{itemize}
+\end{definition}
+
+\textbf{Interpretation:} Lower distance means the model's output semantically aligns with the query's intent.
+
+\textbf{Ideal Selection Rule:}
+\begin{equation}
+M^* = \argmin_i \Big[w_d \cdot d_{\behav}(M_i, x) + w_c \cdot C(M_i)\Big]
+\end{equation}
+
+\textbf{Computational Cost:} This requires calling \textbf{all N models}, which defeats the purpose of efficient routing!
+
+\subsection{Practical Approximation via Prototypes}
+
+To avoid invoking all models, we introduce \textbf{behavioral prototypes}:
+
+\begin{definition}[Behavioral Prototype]
+A prototype $p_k^{(i)}$ for model $M_i$ is a representative output embedding learned from historical data:
+\begin{equation}
+p_k^{(i)} = \text{Centroid}\{g_S(M_i(x_j)) : x_j \in \text{Cluster}_k\}
+\end{equation}
+\end{definition}
+
+\textbf{Approximation:}
+\begin{equation}
+d_{\behav}(M_i, x) \approx \min_k D_S(f_S(x), p_k^{(i)})
+\end{equation}
+
+\textbf{Trade-off:}
+\begin{itemize}
+    \item Exact: $O(N)$ model calls per query
+    \item Approximate: $O(N \times K)$ distance computations (no model calls)
+    \item Where $K$ = number of prototypes per model (typically 3-10)
+\end{itemize}
+
+\textbf{Approximation Error:}
+\begin{equation}
+\epsilon(x) = |d_{\behav}(M_i, x) - \min_k D_S(f_S(x), p_k^{(i)})|
+\end{equation}
+
+This depends on:
+\begin{itemize}
+    \item Prototype quality (how well they cover model behavior space)
+    \item Query novelty (distance to training distribution)
+    \item Embedding space quality
+\end{itemize}
+
+\subsection{Intra-Level Selection}
+
+\textbf{Observation:} Models at the ``same level'' (similar cost) often specialize differently.
+\begin{itemize}
+    \item GPT-4 vs Claude-3 Opus (both ``large'')
+    \item Llama-70B vs Mixtral-8x7B (both ``medium'')
+\end{itemize}
+
+\textbf{Extended Selection Rule:}
+\begin{equation}
+M^* = \argmin_{i,j} \Big[w_d \cdot d_{\behav}(M_i^{(j)}, x) + w_c \cdot C(M_i^{(j)})\Big]
+\end{equation}
+where $M_i^{(j)}$ denotes model $j$ at level $i$.
+
+This enables \textbf{horizontal selection} (within level) and \textbf{vertical selection} (across levels).
+
+\subsection{Meta-Selector and Escalation}
+
+\textbf{Problem:} The selector might make wrong decisions due to:
+\begin{itemize}
+    \item Poor prototype coverage
+    \item Distribution shift
+    \item Miscalibrated confidence
+\end{itemize}
+
+\textbf{Solution:} A \textbf{meta-selector} validates decisions post-hoc and escalates when needed.
+
+\textbf{Confidence Estimation:}
+\begin{equation}
+\conf(d) = \frac{1}{1 + \exp(k(d - d_0))}
+\end{equation}
+where $d$ is behavioral distance, and $k, d_0$ are calibrated on validation data.
+
+\textbf{Escalation Rule} (Expected Value of Information):
+\begin{equation}
+\text{Escalate if: } (\Delta Q - \lambda \Delta C) > 0
+\end{equation}
+where:
+\begin{itemize}
+    \item $\Delta Q$ = expected quality improvement from higher model
+    \item $\Delta C$ = additional cost
+    \item $\lambda$ = cost weight
+\end{itemize}
+
+\section{Algorithms}
+
+\begin{algorithm}
+\caption{Offline Prototype Learning}
+\begin{algorithmic}[1]
+\REQUIRE Model set $\{M_1, \ldots, M_N\}$, query corpus $Q$
+\ENSURE Prototype bank $B$
+\FOR{each model $M_i$}
+    \STATE Sample diverse queries $Q_{\text{sample}} \subset Q$
+    \FOR{each query $q \in Q_{\text{sample}}$}
+        \STATE $\text{output}_q = M_i(q)$ \COMMENT{Actually call the model}
+        \STATE $\text{embed}_q = g_S(\text{output}_q)$
+        \STATE Store $(q, \text{embed}_q)$
+    \ENDFOR
+    \STATE Cluster embeddings into $K$ clusters using K-means
+    \FOR{each cluster $k$}
+        \STATE $p_k^{(i)} = \text{mean}(\{\text{embed}_q : q \in \text{Cluster}_k\})$
+    \ENDFOR
+    \STATE Store prototypes: $B[M_i] = \{p_1^{(i)}, \ldots, p_K^{(i)}\}$
+\ENDFOR
+\RETURN $B$
+\end{algorithmic}
+\textbf{Complexity:} $O(N \times |Q_{\text{sample}}| \times T_{\text{model}})$ where $T_{\text{model}}$ = time to call one model
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Online Selection (Exploit Mode)}
+\begin{algorithmic}[1]
+\REQUIRE Query $x$, prototype bank $B$, models $\{M_1, \ldots, M_N\}$
+\ENSURE Chosen model $M^*$, actual output $y$
+\STATE Embed query: $z_x = f_S(x)$
+\FOR{each model $M_i$}
+    \STATE Find nearest prototype: $k^* = \argmin_k D_S(z_x, p_k^{(i)})$
+    \STATE $d_i = D_S(z_x, p_{k^*}^{(i)})$
+    \STATE Compute score: $s_i = w_d \times d_i + w_c \times C(M_i) + w_l \times \text{level}(M_i)$
+\ENDFOR
+\STATE Select best model: $M^* = \argmin_i s_i$
+\STATE Call selected model: $y = M^*(x)$ \COMMENT{Only invoke ONE model}
+\STATE \textit{(Optional)} Update prototype with exponential moving average
+\RETURN $M^*, y$
+\end{algorithmic}
+\textbf{Complexity:} $O(N \times K \times d)$ where $d$ = embedding dimension
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Online Selection (Explore Mode)}
+\begin{algorithmic}[1]
+\REQUIRE Query $x$, prototype bank $B$, models $\{M_1, \ldots, M_N\}$, sample size $S$
+\ENSURE Chosen model $M^*$, actual output $y$
+\STATE Embed query: $z_x = f_S(x)$
+\STATE Sample models strategically: $M_{\text{sample}} = \{M_{i1}, M_{i2}, \ldots, M_{iS}\}$ ($S$ models)
+\FOR{each $M_{ij} \in M_{\text{sample}}$}
+    \STATE Actually call the model: $y_j = M_{ij}(x)$
+    \STATE Embed output: $z_j = g_S(y_j)$
+    \STATE Compute true distance: $d_j = D_S(z_x, z_j)$
+    \STATE Compute score: $s_j = w_d \times d_j + w_c \times C(M_{ij})$
+    \STATE Update prototypes with $z_j$
+\ENDFOR
+\STATE Select best: $M^* = \argmin_j s_j$
+\STATE $y^* = $ corresponding $y_j$
+\RETURN $M^*, y^*$
+\end{algorithmic}
+\textbf{Complexity:} $O(S \times T_{\text{model}})$. Note: $S \ll N$, typically $S = 2-5$
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Meta-Selector Validation}
+\begin{algorithmic}[1]
+\REQUIRE Query $x$, selected model $M^*$, output $y$, session state $\sigma$
+\ENSURE Escalation decision
+\STATE \textbf{Validate selection:}
+\STATE $z_x = f_S(x)$, $z_y = g_S(y)$
+\STATE $d_{\text{actual}} = D_S(z_x, z_y)$
+\STATE $\conf = \text{confidence\_fn}(d_{\text{actual}})$
+\STATE \textbf{Update session state:}
+\STATE $\sigma.\text{confidence\_history}.\text{append}(\conf)$
+\STATE $\sigma.\text{query\_history}.\text{append}(x)$
+\STATE $\sigma.\text{detect\_repetition}(x)$
+\STATE \textbf{Check budget:}
+\IF{$\sigma.\text{budget\_remaining} \leq 0$}
+    \RETURN NO\_ESCALATION
+\ENDIF
+\STATE \textbf{Check escalation triggers:}
+\IF{$\sigma.\text{is\_critical}$ AND $\conf < \theta_{\text{crit}}$}
+    \RETURN ESCALATE(reason=CRITICAL)
+\ELSIF{$\sigma.\text{repetition\_count} \geq 2$ AND $\conf < \theta_{\text{rep}}$}
+    \RETURN ESCALATE(reason=REPETITION)
+\ELSIF{Expected Value of Information positive}
+    \RETURN ESCALATE(reason=POSITIVE\_EVI)
+\ELSIF{$\conf < \theta$}
+    \RETURN ESCALATE(reason=LOW\_CONFIDENCE)
+\ENDIF
+\RETURN NO\_ESCALATION
+\end{algorithmic}
+\textbf{Complexity:} $O(d)$ for embedding + $O(1)$ for logic
+\end{algorithm}
+
+\section{Implementation Details}
+
+\subsection{Embedding Spaces}
+
+\textbf{Option 1: SentenceTransformers} \cite{reimers2019}
+\begin{itemize}
+    \item Pre-trained: \texttt{all-MiniLM-L6-v2} (384-dim, fast)
+    \item Semantic: \texttt{all-mpnet-base-v2} (768-dim, better quality)
+\end{itemize}
+
+\textbf{Option 2: LLM-based embeddings}
+\begin{itemize}
+    \item OpenAI \texttt{text-embedding-3-small} (1536-dim)
+    \item Cohere embed-v3 (1024-dim)
+\end{itemize}
+
+\textbf{Key Requirement:} Same embedding function for queries and outputs to ensure shared semantic space.
+
+\subsection{Prototype Management}
+
+\begin{lstlisting}[language=Python,caption={Prototype Bank Implementation}]
+class PrototypeBank:
+    def __init__(self, n_prototypes=5):
+        self.prototypes = {}  # model_id -> list of embeddings
+        self.n_prototypes = n_prototypes
+    
+    def update(self, model_id, new_embedding, alpha=0.1):
+        """Update prototypes with exponential moving average"""
+        if model_id not in self.prototypes:
+            self.prototypes[model_id] = [new_embedding]
+        else:
+            # Find nearest prototype
+            distances = [cosine_distance(new_embedding, p) 
+                        for p in self.prototypes[model_id]]
+            nearest_idx = np.argmin(distances)
+            
+            # EMA update
+            self.prototypes[model_id][nearest_idx] = (
+                alpha * new_embedding + 
+                (1 - alpha) * self.prototypes[model_id][nearest_idx]
+            )
+\end{lstlisting}
+
+\subsection{Confidence Calibration}
+
+The confidence function $\conf(d)$ needs calibration on validation data:
+
+\begin{enumerate}
+    \item Collect pairs $(d_i, \text{success}_i)$ where success = 1 if output was acceptable
+    \item Fit logistic regression: $P(\text{success} | d) = \sigma(k(d - d_0))$
+    \item Extract parameters $k$ and $d_0$
+\end{enumerate}
+
+\subsection{System Architecture}
+
+\begin{lstlisting}[language=Python,caption={System Overview}]
+# Offline phase
+selector = BehavioralSelector(models, embedding_space)
+selector.build_prototypes(training_corpus)
+
+# Online phase
+meta_selector = MetaSelector(selector)
+for query in stream:
+    result = selector.select(query, mode='exploit')
+    decision = meta_selector.validate(query, result)
+    
+    if decision.should_escalate:
+        result = selector.escalate(query, decision.target_model)
+    
+    return result.output
+\end{lstlisting}
+
+\section{Experimental Design (Future Work)}
+
+\subsection{Datasets}
+
+Propose evaluation on:
+\begin{enumerate}
+    \item \textbf{MMLU}: Multi-domain questions, varying difficulty
+    \item \textbf{HumanEval}: Coding tasks (clear correctness metric)
+    \item \textbf{TruthfulQA}: Factual accuracy
+    \item \textbf{AlpacaEval}: Instruction following
+    \item \textbf{MT-Bench}: Diverse capabilities
+\end{enumerate}
+
+\subsection{Baselines}
+
+\begin{itemize}
+    \item \textbf{Random}: Random model selection
+    \item \textbf{Always-Small}: Always use cheapest model
+    \item \textbf{Always-Large}: Always use best model (upper bound on quality)
+    \item \textbf{Cascade}: Try small→medium→large until confidence threshold
+    \item \textbf{Learned Router}: Train classifier on query features
+\end{itemize}
+
+\subsection{Metrics}
+
+\textbf{Primary:}
+\begin{itemize}
+    \item \textbf{Cost Reduction}: Total cost vs always-large baseline
+    \item \textbf{Quality}: Accuracy/semantic similarity vs always-large
+\end{itemize}
+
+\textbf{Secondary:}
+\begin{itemize}
+    \item Latency (including routing overhead)
+    \item Pareto efficiency curve
+    \item Calibration error of confidence estimates
+\end{itemize}
+
+\subsection{Ablations}
+
+Test impact of:
+\begin{itemize}
+    \item Number of prototypes ($K = 1, 3, 5, 10, 20$)
+    \item Exploration rate ($\epsilon = 0, 0.05, 0.1, 0.2$)
+    \item Distance metric (cosine vs Euclidean vs Mahalanobis)
+    \item Embedding model (small vs large)
+    \item Meta-selector (with vs without)
+\end{itemize}
+
+\section{Discussion}
+
+\subsection{When This Works Well}
+
+\textbf{Best scenarios:}
+\begin{itemize}
+    \item Large query volumes (amortize offline cost)
+    \item Clear difficulty stratification (queries naturally cluster)
+    \item Stable model behaviors (prototypes remain valid)
+    \item Multiple models available at each level
+\end{itemize}
+
+\textbf{Example:} Customer support chatbot with mix of:
+\begin{itemize}
+    \item Simple FAQs → small model
+    \item Product questions → medium model
+    \item Complex troubleshooting → large model
+\end{itemize}
+
+\subsection{Limitations}
+
+\textbf{Limitation 1:} Requires offline calibration phase
+\begin{itemize}
+    \item Need representative query corpus
+    \item Models must be available for profiling
+\end{itemize}
+
+\textbf{Limitation 2:} Approximation error
+\begin{itemize}
+    \item Prototypes may not cover all model behaviors
+    \item Novel queries may be misrouted
+\end{itemize}
+
+\textbf{Limitation 3:} Embedding quality dependence
+\begin{itemize}
+    \item If embeddings don't capture semantic adequacy, behavioral distance fails
+    \item Different tasks may need different embedding spaces
+\end{itemize}
+
+\textbf{Limitation 4:} Static model assumption
+\begin{itemize}
+    \item If models are retrained/updated, prototypes become stale
+    \item Need periodic recalibration
+\end{itemize}
+
+\textbf{Limitation 5:} Multi-turn conversations
+\begin{itemize}
+    \item Current formulation is stateless (per-query)
+    \item Doesn't account for conversation history
+\end{itemize}
+
+\subsection{Extensions}
+
+\textbf{Extension 1:} Task-specific embedding spaces
+\begin{itemize}
+    \item Learn separate spaces for coding, math, creative writing
+    \item Route to appropriate space based on query type
+\end{itemize}
+
+\textbf{Extension 2:} Dynamic prototypes
+\begin{itemize}
+    \item Continuously update prototypes online
+    \item Detect distribution shift and trigger recalibration
+\end{itemize}
+
+\textbf{Extension 3:} Multi-objective optimization
+\begin{itemize}
+    \item Balance cost, latency, and quality simultaneously
+    \item Pareto frontier selection
+\end{itemize}
+
+\textbf{Extension 4:} Hierarchical meta-selectors
+\begin{itemize}
+    \item Meta-meta-selectors to validate meta-selector decisions
+    \item Recursive control structure
+\end{itemize}
+
+\subsection{Relationship to Adjoint Projections}
+
+Our framework can be viewed through category-theoretic lens \cite{kowalczyk2025}:
+\begin{itemize}
+    \item Collapse $C: M_{i+1} \to M_i$: Use simpler model
+    \item Projection $P: M_i \to M_{i+1}$: Escalate to complex model
+    \item Adjunction: $P \circ C \approx \text{id}$ (round-trip preserves information)
+\end{itemize}
+
+However, we deliberately keep the paper focused on practical concerns rather than full categorical formalism. The interested reader can explore connections to:
+\begin{itemize}
+    \item Functorial semantics of computation
+    \item Information-theoretic bounds on model compression
+    \item Category of models with morphisms as distillation/escalation
+\end{itemize}
+
+\section{Conclusion}
+
+We presented a practical framework for adaptive model selection in LLM hierarchies using behavioral distance and learned prototypes. Our two-phase design—offline prototype learning and online fast routing—enables efficient selection without invoking all models. The meta-selector provides confidence validation and rational escalation.
+
+\textbf{Key contributions:}
+\begin{enumerate}
+    \item Formal problem definition bridging theory and practice
+    \item Concrete algorithms with complexity analysis
+    \item Clear specification of approximations and trade-offs
+    \item Open-source implementation
+\end{enumerate}
+
+\textbf{Honest assessment:} While we believe this approach is promising, full empirical validation across diverse tasks and model hierarchies remains essential future work. We hope this framework provides a foundation for further research in cost-efficient LLM inference.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{kowalczyk2025}
+Kowalczyk, K. (2025).
+\textit{Adjoint Projections on Computational Hierarchies}.
+Manuscript in preparation.
+
+\bibitem{chen2023frugal}
+Chen, L., Zaharia, M., and Zou, J. (2023).
+\textit{FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance}.
+arXiv preprint arXiv:2305.05176.
+
+\bibitem{shazeer2017}
+Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le, Q., Hinton, G., and Dean, J. (2017).
+\textit{Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer}.
+In \textit{Proceedings of the 5th International Conference on Learning Representations (ICLR)}.
+
+\bibitem{leviathan2023}
+Leviathan, Y., Kalman, M., and Matias, Y. (2023).
+\textit{Fast Inference from Transformers via Speculative Decoding}.
+In \textit{Proceedings of the 40th International Conference on Machine Learning (ICML)}.
+
+\bibitem{reimers2019}
+Reimers, N. and Gurevych, I. (2019).
+\textit{Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks}.
+In \textit{Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing (EMNLP)}.
+
+\end{thebibliography}
+
+\appendix
+
+\section{Pseudocode for Complete System}
+
+See supplementary materials for full Python implementation at:\\
+\url{https://github.com/KarolFilipKowalczyk/Consciousness}
+
+\end{document}
