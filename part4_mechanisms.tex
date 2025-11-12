@@ -118,7 +118,7 @@ Each parallel machine instance operates independently but reports to a central m
 \State \textbf{Input:} Problem $P$, level $n$, time limit $t_{\text{max}}$
 \State \textbf{Output:} Solution $s$ or FAILURE
 \State
-\State Initialize: $\text{memory} \gets \text{allocate}(2^n \text{ bits})$
+\State Initialize: $\text{memory} \gets \text{allocate}(\kappa n \log n \text{ bits})$
 \State $\text{state} \gets \text{initialState}(P)$
 \State $t_{\text{start}} \gets \text{currentTime}()$
 \State
@@ -232,7 +232,7 @@ The tight relationship between attention and consciousness reflects their shared
 
 \subsection{Capacity Limits}
 
-Working memory capacity limits reflect machine-level constraints. Each machine $M_n$ has limited memory ($2^n$ bits), constraining how much information can be actively maintained. The famous "magical number seven plus or minus two" may reflect typical resource levels deployed for working memory tasks. Individual differences in working memory capacity partially reflect which machine levels individuals can stably deploy.
+Working memory capacity limits reflect machine-level constraints. Each machine $M_n$ has limited effective information capacity ($I(n) = \kappa n \log n$ bits), constraining how much information can be actively maintained. The famous "magical number seven plus or minus two" may reflect typical resource levels deployed for working memory tasks. Individual differences in working memory capacity partially reflect which machine levels individuals can stably deploy.
 
 Training can improve working memory not by expanding machine capacity but by improving selector efficiency. Better resource allocation allows the same underlying machines to maintain more information through more efficient coding and deployment strategies. This explains why training effects are often task-specific—the selector has learned better heuristics for those particular tasks without changing underlying capacity.
 

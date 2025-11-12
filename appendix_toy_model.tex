@@ -15,7 +15,7 @@ This toy model is not intended to be fully conscious—it's a minimal demonstrat
 
 \textbf{What the toy model demonstrates:}
 \begin{itemize}
-\item Hierarchical machine levels with exponentially growing resources
+\item Hierarchical machine levels with entropically growing resources
 \item Selector mechanism choosing appropriate resource levels
 \item Parallel exploration across multiple machines
 \item Collapse to a single winning trajectory
@@ -89,17 +89,20 @@ We use maze navigation as the problem domain because it:
 
 \subsubsection{Machine Level Class}
 
-Each machine level $M_n$ has exponentially more resources:
+Each machine level $M_n$ has entropically more resources:
 
 \begin{lstlisting}[language=Python]
 class MachineLevel:
     """
-    Represents a finite machine M_n with 2^n bits of memory.
+    Represents a finite machine M_n with I(n) = kappa * n * log(n) effective information capacity.
+    For simplicity in this toy model, we use kappa=1 and log base 2.
     """
-    def __init__(self, n):
+    def __init__(self, n, kappa=1):
         self.level = n
-        self.memory_bits = 2**n
-        self.max_path_length = 2**n  # Maximum states it can track
+        # Entropic scaling: I(n) = kappa * n * log_2(n)
+        import math
+        self.memory_bits = int(kappa * n * math.log2(n + 1)) if n > 0 else 1
+        self.max_path_length = self.memory_bits  # Maximum states it can track
         self.exploration_time = 0
         self.success = False
         self.solution_path = None
@@ -296,7 +299,7 @@ class ConsciousnessSystem:
         for n in levels_to_try:
             machine = MachineLevel(n)
             machines.append(machine)
-            print(f"  • Launched M_{n} (2^{n} = {2**n} memory units)")
+            print(f"  • Launched M_{n} (I({n}) ≈ {machine.memory_bits} memory units)")
         
         # Allocate time budget across machines
         time_per_machine = time_budget / len(machines)
@@ -790,7 +793,7 @@ Each phase adds biological realism while preserving core mechanisms.
 This implementation bridges the theoretical framework with concrete computation, demonstrating connections to multiple parts of the theory:
 
 \begin{itemize}
-\item \textbf{Part I (Foundations)}: Implements the machine hierarchy $\{M_n\}$ with exponential resource scaling
+\item \textbf{Part I (Foundations)}: Implements the machine hierarchy $\{M_n\}$ with entropic resource scaling $I(n) = \kappa n \log n$
 \item \textbf{Part IV (Mechanisms)}: Demonstrates selector mechanism choosing appropriate computational levels
 \item \textbf{Part III (Temporal Revolution)}: Shows temporal phenomenology through subjective vs.\ computational time
 \item \textbf{Part V (Hard Problem)}: Exhibits consciousness markers that correlate with reportable awareness
