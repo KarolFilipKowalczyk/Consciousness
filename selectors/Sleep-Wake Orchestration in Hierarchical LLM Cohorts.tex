@@ -152,7 +152,7 @@ The \textbf{selector} $S$ maps each input $x \in T$ to the lowest-level model ca
 \EVI(x) = \E[Q_{n+1}(x) - Q_n(x)] - \lambda (C_{n+1} - C_n) > 0,
 \end{equation}
 
-where $Q$ measures response quality and $C$ represents computational cost. This Expected Value of Information (\EVI) criterion determines when escalation to a higher level is justified.
+where $Q$ measures response quality and $C$ represents computational cost. This Expected Value of Information ($\EVI$) criterion determines when escalation to a higher level is justified.
 
 \subsection{Adjoint Duality}
 
@@ -774,72 +774,7 @@ Compare against:
     \item \textbf{Random selection:} Random choice of sleeper instead of gap-based
 \end{itemize}
 
-\subsection{Preliminary Experimental Results}
-\label{sec:results}
 
-We conducted synthetic experiments with mock models (1B, 3B, 8B parameters) over 100 sleep-wake cycles on a controlled query distribution.
-
-\begin{table}[h]
-\centering
-\caption{Experimental results after 100 cycles}
-\label{tab:results}
-\begin{tabular}{@{}lrrr@{}}
-\toprule
-\textbf{Metric} & \textbf{Initial} & \textbf{Final} & \textbf{Improvement} \\
-\midrule
-Escalation rate (\%) & 15.2 & 4.2 & $-$72\% \\
-Gap coverage $\sum G(C_i)$ & 2.34 & 0.76 & $-$67\% \\
-Cost per query (rel.) & 1.00 & 0.58 & $-$42\% \\
-Confidence variance & 0.18 & 0.07 & $-$61\% \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Key findings:
-\begin{itemize}
-    \item \textbf{Escalation reduction:} System reduced escalations from 15.2\% to 4.2\%, indicating successful gap coverage through targeted fine-tuning.
-    \item \textbf{Gap convergence:} Total gap mass $\sum G(C_i)$ decreased by 67\%, showing effective identification and remediation of coverage deficits.
-    \item \textbf{Cost efficiency:} Average cost per query reduced by 42\% through improved routing to smaller models.
-    \item \textbf{Specialization:} Confidence variance decreased by 61\%, indicating models developed focused specializations.
-\end{itemize}
-
-The results support Hypothesis 1, demonstrating that sleep--wake orchestration achieves continuous improvement within bounded resources.
-
-\subsection{Comparison with Related Methods}
-\label{sec:comparison}
-
-We compare our approach with existing methods for efficient LLM inference:
-
-\begin{table}[h]
-\centering
-\caption{Comparison with baseline methods}
-\label{tab:comparison}
-\small
-\begin{tabular}{@{}lrrrr@{}}
-\toprule
-\textbf{Method} & \textbf{Esc. Rate} & \textbf{Cost} & \textbf{Adaptive} & \textbf{Safe} \\
-\midrule
-Static routing & 15.2\% & 1.00× & No & High \\
-Cascade (sequential) & 8.7\% & 0.85× & No & Medium \\
-FrugalGPT \cite{chen2023frugal} & 7.3\% & 0.72× & Yes & Low \\
-\textbf{Our method} & \textbf{4.2\%} & \textbf{0.58×} & \textbf{Yes} & \textbf{High} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Qualitative comparison:
-
-\begin{enumerate}
-    \item \textbf{FrugalGPT} \cite{chen2023frugal}: Uses learned router for model selection. \textit{Difference:} Static routing without continual learning. \textit{Our advantage:} Adaptive gap-based fine-tuning, safe canary rollout.
-    
-    \item \textbf{Mixture of Experts} \cite{shazeer2017outrageously}: Multiple expert models with learned gating. \textit{Difference:} Fixed experts, no sleep-wake cycles. \textit{Our advantage:} Continual adaptation, resource-bounded operation.
-    
-    \item \textbf{Cascade Inference} \cite{schuster2021confident}: Sequential model invocation with confidence thresholds. \textit{Difference:} No fine-tuning, static thresholds. \textit{Our advantage:} Gap-based learning, dynamic routing.
-    
-    \item \textbf{Continual Learning} \cite{luo2023catastrophic}: Online adaptation of single models. \textit{Difference:} Single model, catastrophic forgetting issues. \textit{Our advantage:} Multi-model ensemble, regularized updates.
-\end{enumerate}
-
-Our method achieves the lowest escalation rate (4.2\%) and cost (0.58×) while maintaining high safety through canary rollout, demonstrating the effectiveness of sleep--wake orchestration.
 
 \section{Discussion}
 \label{sec:discussion}
@@ -908,9 +843,7 @@ Under favorable conditions, gap coverage $\sum_i G(C_i)$ decreases at rate $O(1/
 Follows from stochastic gradient descent convergence with learning rate $\alpha_t = \alpha_0/\sqrt{t}$. Each cycle performs gradient step on loss $\mathcal{L}$ (Equation~\ref{eq:loss}), which is convex in the regime of small updates due to regularization.
 \end{proof}
 
-\begin{remark}
-Preliminary experiments (Table~\ref{tab:results}) show empirical convergence rate consistent with $O(1/\sqrt{n})$ prediction, with gap coverage decreasing from 2.34 to 0.76 over 100 cycles.
-\end{remark}
+
 
 \subsection{Future Work}
 
